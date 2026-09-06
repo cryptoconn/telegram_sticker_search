@@ -6,6 +6,7 @@ plain language to get it back. Works inline in any chat: @yourbot crying cat
 from __future__ import annotations
 
 import asyncio
+import html
 import logging
 import re
 from uuid import uuid4
@@ -40,18 +41,23 @@ logging.basicConfig(
 logging.getLogger("httpx").setLevel(logging.WARNING)
 log = logging.getLogger("stickerbot")
 
+# HTML, not Markdown: Telegram's legacy Markdown has no backslash escaping, so
+# an underscore in an interpolated value (a bot username, a pack title) silently
+# opens an italic entity that never closes and the whole send fails.
 HELP = (
-    "*Sticker search*\n\n"
+    "<b>Sticker search</b>\n\n"
     "• Send me any sticker → I offer to index its whole pack.\n"
-    "• `/index <pack link or name>` → index a pack directly.\n"
+    "• <code>/index &lt;pack link or name&gt;</code> → index a pack directly.\n"
     "• Just write what you remember (\"cat crying in the rain\") → I send matches.\n"
-    "• Type `@{me} crying cat` in *any* chat to insert a sticker inline.\n\n"
-    "`/packs` indexed packs · `/forget <name>` remove a pack · "
-    "`/reindex <name>` re-caption a pack\n"
-    "`/backend` show the vision model · `/backend local|cloud|auto` switch it\n"
-    "`/quota` your captioning budget\n\n"
-    "_Indexing is limited to the user IDs in INDEX\\_USER\\_IDS; everyone "
-    "allowed can search._"
+    "• Type <code>@{me} crying cat</code> in <b>any</b> chat to insert a sticker "
+    "inline.\n\n"
+    "<code>/packs</code> indexed packs · <code>/forget &lt;name&gt;</code> remove a "
+    "pack · <code>/reindex &lt;name&gt;</code> re-caption a pack\n"
+    "<code>/backend</code> show the vision model · "
+    "<code>/backend local|cloud|auto</code> switch it\n"
+    "<code>/quota</code> your captioning budget\n\n"
+    "<i>Indexing is limited to the user IDs in INDEX_USER_IDS; everyone "
+    "allowed can search.</i>"
 )
 
 
@@ -107,11 +113,13 @@ class BotApp:
     # ---------- commands ----------
 
     async def start(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+        if not update.message:
+            return
         if not self.allowed(update):
             await update.message.reply_text("Not authorised.")
             return
-        me = (await ctx.bot.get_me()).username
-        await update.message.reply_markdown(HELP.format(me=me))
+        me = (await ctx.bot.get_me()).username or ""
+        await update.message.reply_html(HELP.format(me=html.escape(me)))
 
     async def packs(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         if not self.allowed(update):
@@ -120,14 +128,16 @@ class BotApp:
         if not s["list"]:
             await update.message.reply_text("Nothing indexed yet. Send me a sticker.")
             return
-        lines = [f"{title} — {n} stickers (`{name}`)"
+        lines = [f"{html.escape(title)} — {n} stickers "
+                 f"(<code>{html.escape(name)}</code>)"
                  for title, name, n in s["list"]]
-        by_model = "\n".join(f"`{m}` — {n}" for m, n in s.get("models", []))
-        text = (f"*{s['sets']} packs, {s['stickers']} stickers, "
-                f"{s['vectors']} searchable*\n\n" + "\n".join(lines))
+        by_model = "\n".join(f"<code>{html.escape(m)}</code> — {n}"
+                             for m, n in s.get("models", []))
+        text = (f"<b>{s['sets']} packs, {s['stickers']} stickers, "
+                f"{s['vectors']} searchable</b>\n\n" + "\n".join(lines))
         if by_model:
             text += "\n\ncaptioned by:\n" + by_model
-        await update.message.reply_markdown(text)
+        await update.message.reply_html(text)
 
     async def backend_cmd(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         if not self.allowed(update):
@@ -139,7 +149,7 @@ class BotApp:
                 await update.message.reply_text(
                     f"Cannot switch: {exc}. Use local, cloud or auto.")
                 return
-        await update.message.reply_markdown(await self.captioner.status())
+        await update.message.reply_html(await self.captioner.status())
 
     async def quota_cmd(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         if not self.allowed(update):
@@ -153,8 +163,9 @@ class BotApp:
         budget, used, limit = await self.budget_for(user.id)
         cap = f"{used}/{limit} captions used today" if limit else \
             f"{used} captions today, no daily limit"
-        busy = f"\nbusy with `{self.indexer.current}`" if self.indexer.busy else ""
-        await update.message.reply_markdown(
+        busy = (f"\nbusy with <code>{html.escape(self.indexer.current or '')}</code>"
+                if self.indexer.busy else "")
+        await update.message.reply_html(
             f"{cap}\nmax {self.cfg.max_pack_size} per pack, "
             f"{budget} available right now{busy}")
 
@@ -220,10 +231,12 @@ class BotApp:
 
         queued = self.indexer.busy
         note = " (queued behind another pack)" if queued else ""
+        safe = html.escape(name)
         msg = await ctx.bot.send_message(
             chat.id,
-            f"Indexing `{name}` via *{self.captioner.mode}* backend{note} …",
-            parse_mode="Markdown")
+            f"Indexing <code>{safe}</code> via <b>{self.captioner.mode}</b> "
+            f"backend{note} …",
+            parse_mode="HTML")
 
         last = [0.0]
 
@@ -233,8 +246,8 @@ class BotApp:
                 return
             last[0] = now
             try:
-                await msg.edit_text(f"Indexing `{name}` … {done}/{total}",
-                                    parse_mode="Markdown")
+                await msg.edit_text(f"Indexing <code>{safe}</code> … {done}/{total}",
+                                    parse_mode="HTML")
             except Exception:  # noqa: BLE001 - ignore "message not modified"
                 pass
 
@@ -244,14 +257,15 @@ class BotApp:
                 ctx.bot, name, force=force, progress=progress, budget=budget)
         except Exception as exc:  # noqa: BLE001
             log.exception("indexing %s failed", name)
-            await msg.edit_text(f"Could not index `{name}`: {exc}",
-                                parse_mode="Markdown")
+            await msg.edit_text(
+                f"Could not index <code>{safe}</code>: {html.escape(str(exc))}",
+                parse_mode="HTML")
             return
         finally:
             if res and res.attempted:
                 await self.store.add_usage(user.id, res.attempted)
 
-        parts = [f"✅ `{name}`: {res.captioned} described"]
+        parts = [f"✅ <code>{safe}</code>: {res.captioned} described"]
         if res.failed:
             parts.append(f"{res.failed} failed")
         if res.skipped:
@@ -264,7 +278,7 @@ class BotApp:
         if limit:
             spent = await self.store.usage_today(user.id)
             text += f"\n\nUsed today: {spent}/{limit} captions."
-        await msg.edit_text(text, parse_mode="Markdown")
+        await msg.edit_text(text, parse_mode="HTML")
 
     async def on_sticker(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         if not self.allowed(update):
@@ -275,11 +289,12 @@ class BotApp:
             return
         if not self.may_index(update):
             known = await self.store.known_uids(sticker.set_name)
+            safe = html.escape(sticker.set_name)
             await update.message.reply_text(
-                f"`{sticker.set_name}` — {len(known)} stickers indexed."
+                f"<code>{safe}</code> — {len(known)} stickers indexed."
                 if known else
-                f"`{sticker.set_name}` isn't indexed, and indexing is restricted.",
-                parse_mode="Markdown")
+                f"<code>{safe}</code> isn't indexed, and indexing is restricted.",
+                parse_mode="HTML")
             return
         kb = InlineKeyboardMarkup([[
             InlineKeyboardButton("Index this pack",
@@ -287,8 +302,9 @@ class BotApp:
             InlineKeyboardButton("Re-index",
                                  callback_data=f"rdx:{sticker.set_name}"),
         ]])
-        await update.message.reply_text(f"Pack: `{sticker.set_name}`",
-                                        parse_mode="Markdown", reply_markup=kb)
+        await update.message.reply_text(
+            f"Pack: <code>{html.escape(sticker.set_name)}</code>",
+            parse_mode="HTML", reply_markup=kb)
 
     async def on_button(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         q = update.callback_query
@@ -349,7 +365,7 @@ class BotApp:
                  ", ".join(self.captioner.available) or "none",
                  self.captioner.mode)
         for line in (await self.captioner.status()).splitlines():
-            log.info("  %s", line.replace("*", ""))
+            log.info("  %s", re.sub(r"<[^>]+>", "", line))
         if not self.cfg.index_user_ids:
             log.warning("INDEX_USER_IDS is empty — nobody can trigger captioning. "
                         "Set it to your Telegram user ID.")
@@ -361,6 +377,10 @@ class BotApp:
     async def post_shutdown(self, app: Application) -> None:
         await self.captioner.close()
         await self.embedder.close()
+
+
+async def on_error(update: object, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    log.error("unhandled error while processing an update", exc_info=ctx.error)
 
 
 def main() -> None:
@@ -385,6 +405,7 @@ def main() -> None:
     app.add_handler(CallbackQueryHandler(bot.on_button))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, bot.on_text))
     app.add_handler(InlineQueryHandler(bot.on_inline))
+    app.add_error_handler(on_error)
 
     log.info("starting polling")
     app.run_polling(allowed_updates=Update.ALL_TYPES)

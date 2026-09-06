@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import html
 import logging
 import time
 from dataclasses import dataclass
@@ -291,14 +292,15 @@ class CaptionRouter:
         raise CaptionError("; ".join(errors) or "no backend configured")
 
     async def status(self) -> str:
-        lines = [f"mode: *{self.mode}*"]
+        lines = [f"mode: <b>{html.escape(self.mode)}</b>"]
         for role, b in (("local", self.local), ("cloud", self.cloud)):
             if not b:
                 lines.append(f"{role}: not configured")
                 continue
             ok = await b.healthy()
             mark = "reachable" if ok else "unreachable"
-            lines.append(f"{role}: {b.label} · `{b.model}` · {mark}")
+            lines.append(f"{role}: {html.escape(b.label)} · "
+                         f"<code>{html.escape(b.model)}</code> · {mark}")
         if self._local_down_until > time.monotonic():
             left = self._local_down_until - time.monotonic()
             lines.append(f"local on cooldown for {left:.0f}s")
