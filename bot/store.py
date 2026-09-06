@@ -16,7 +16,7 @@ log = logging.getLogger(__name__)
 
 # Bumped when the text put into stickers_fts changes, so the keyword index is
 # rebuilt from the captions already stored rather than needing a re-caption.
-FTS_VERSION = "2"
+FTS_VERSION = "3"
 
 SCHEMA = """
 PRAGMA journal_mode=WAL;
@@ -43,7 +43,7 @@ CREATE TABLE IF NOT EXISTS stickers (
 CREATE INDEX IF NOT EXISTS idx_stickers_set ON stickers(set_name);
 
 CREATE VIRTUAL TABLE IF NOT EXISTS stickers_fts
-    USING fts5(uid UNINDEXED, text);
+    USING fts5(uid UNINDEXED, text, tokenize='porter unicode61');
 
 CREATE TABLE IF NOT EXISTS meta (
     key    TEXT PRIMARY KEY,
@@ -69,10 +69,15 @@ class StickerRow:
     caption: str | None
 
 
+def fts_terms(text: str) -> list[str]:
+    """The words of a query, quoted so FTS5 reads them as literals."""
+    return [f'"{t}"' for t in re.findall(r"\w+", text, flags=re.UNICODE)
+            if len(t) > 1]
+
+
 def fts_query(text: str) -> str:
-    """Turn free text into a safe FTS5 OR-query."""
-    terms = [t for t in re.findall(r"\w+", text, flags=re.UNICODE) if len(t) > 1]
-    return " OR ".join(f'"{t}"' for t in terms)
+    """Match any term. Used as the fallback when no caption has them all."""
+    return " OR ".join(fts_terms(text))
 
 
 class Store:
@@ -119,10 +124,16 @@ class Store:
         return " ".join(filter(None, [caption, emoji]))
 
     def _rebuild_fts(self) -> None:
-        """Re-derive the keyword index from captions already in the database."""
+        """Re-derive the keyword index from captions already in the database.
+
+        Dropped and recreated rather than emptied: the tokenizer is fixed when
+        the table is created, so changing it needs a new table. Captions are
+        already stored, so this costs nothing but a moment at startup.
+        """
         rows = self._db.execute(
             "SELECT uid, caption, emoji FROM stickers").fetchall()
-        self._db.execute("DELETE FROM stickers_fts")
+        self._db.execute("DROP TABLE IF EXISTS stickers_fts")
+        self._db.executescript(SCHEMA)
         self._db.executemany(
             "INSERT INTO stickers_fts (uid, text) VALUES (?, ?)",
             [(r["uid"], self._fts_text(r["caption"], r["emoji"])) for r in rows],
@@ -322,9 +333,35 @@ class Store:
                                        r["emoji"], r["caption"])
         return out
 
+    def _fts(self, match: str, limit: int) -> list:
+        try:
+            return self._db.execute(
+                """SELECT uid, bm25(stickers_fts) AS score FROM stickers_fts
+                   WHERE stickers_fts MATCH ?
+                   ORDER BY score LIMIT ?""",
+                (match, limit),
+            ).fetchall()
+        except sqlite3.OperationalError:
+            return []
+
     def _search(self, qvec: np.ndarray | None, text: str, limit: int,
                 embed_model: str = "") -> list[StickerRow]:
         ranks: dict[str, float] = {}
+        terms = fts_terms(text)
+
+        # A caption carrying every term beats one carrying only some, so
+        # "pig mountain" returns the pig on the mountain rather than every pig
+        # in the pack. When no caption has them all, fall back to matching any
+        # of them: the captions may just word it differently, and a partial
+        # match beats nothing.
+        rows: list = []
+        only: set[str] | None = None
+        if len(terms) > 1:
+            rows = self._fts(" AND ".join(terms), limit * 5)
+            if rows:
+                only = {r["uid"] for r in rows}
+        if not rows and terms:
+            rows = self._fts(" OR ".join(terms), limit * 5)
 
         # dense / semantic
         if qvec is not None:
@@ -343,35 +380,27 @@ class Store:
                 for rank, i in enumerate(order):
                     if float(sims[i]) < floor:
                         break
+                    # similarity ranks the all-term matches, it does not widen
+                    # them: that is what kept the other pigs in the results
+                    if only is not None and uids[i] not in only:
+                        continue
                     ranks[uids[i]] = ranks.get(uids[i], 0.0) + 1.0 / (60 + rank)
 
         # sparse / keyword
-        match = fts_query(text)
-        if match:
-            try:
-                rows = self._db.execute(
-                    """SELECT uid, bm25(stickers_fts) AS score FROM stickers_fts
-                       WHERE stickers_fts MATCH ?
-                       ORDER BY score LIMIT ?""",
-                    (match, limit * 5),
-                ).fetchall()
-            except sqlite3.OperationalError:
-                rows = []
-            if rows:
-                # bm25 is negative and lower is better. Same idea as above: a
-                # multi-word query ORs its terms, so keep the rows that matched
-                # strongly and drop those that only caught a common word. When
-                # every row scores 0 the term is in all of them and they are
-                # all equally right, so nothing is cut.
-                cut = rows[0]["score"] * self.rel_cutoff
-                for rank, r in enumerate(rows):
-                    if r["score"] > cut:
-                        break
-                    ranks[r["uid"]] = ranks.get(r["uid"], 0.0) + 1.0 / (60 + rank)
+        if rows:
+            # bm25 is negative and lower is better. Same idea as above: keep the
+            # rows that matched strongly and drop those that only caught a
+            # common word. When every row scores 0 the term is in all of them
+            # and they are equally right, so nothing is cut.
+            cut = rows[0]["score"] * self.rel_cutoff
+            for rank, r in enumerate(rows):
+                if r["score"] > cut:
+                    break
+                ranks[r["uid"]] = ranks.get(r["uid"], 0.0) + 1.0 / (60 + rank)
 
         top = sorted(ranks.items(), key=lambda kv: -kv[1])[:limit]
-        rows = self._rows([uid for uid, _ in top])
-        return [rows[uid] for uid, _ in top if uid in rows]
+        fetched = self._rows([uid for uid, _ in top])
+        return [fetched[uid] for uid, _ in top if uid in fetched]
 
     async def search(self, qvec, text: str, limit: int,
                      embed_model: str = "") -> list[StickerRow]:

@@ -217,6 +217,7 @@ a group is rejected too.
 | Index a pack | Send the bot any sticker from it, tap **Index this pack** |
 | Index by link | `/index https://t.me/addstickers/PackName` |
 | Search | Just write: `guy shrugging with a confused face` |
+| Narrow a search | Add words: `pig mountain` beats `pig` when the pack has several pigs |
 | Search anywhere | Type `@yourbot crying cat` in any chat |
 | List packs | `/packs` |
 | Re-caption | `/reindex PackName` (after changing model or language) |
@@ -256,7 +257,14 @@ Progress is shown in the chat; already-captioned stickers are skipped on re-runs
   Where the cosines fall varies by embedding model, so treat the defaults as a
   starting point rather than a calibration.
 
-Two notes on how matching works, since both surprise people:
+Adding words narrows a search rather than widening it. `pig mountain` prefers
+the one caption mentioning both, so a pack full of pigs returns just the one on
+the mountain; `pig` on its own still returns them all. If no single caption has
+every word the search falls back to matching any of them, so wording the query
+differently from the caption still finds something rather than nothing. Plurals
+are handled, so `mountains` finds a caption that says `mountain`.
+
+Two more notes on how matching works, since both surprise people:
 
 - The pack name is not searchable. It is identical for every sticker in a pack,
   so indexing it made one word in the name match the whole pack — searching
