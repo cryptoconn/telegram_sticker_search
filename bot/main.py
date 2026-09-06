@@ -56,8 +56,8 @@ HELP = (
     "<code>/backend</code> show the vision model · "
     "<code>/backend local|cloud|auto</code> switch it\n"
     "<code>/quota</code> your captioning budget\n\n"
-    "<i>Indexing is limited to the user IDs in INDEX_USER_IDS; everyone "
-    "allowed can search.</i>"
+    "<i>/index, /reindex, /forget and /backend are limited to the user IDs in "
+    "INDEX_USER_IDS; everyone allowed can search.</i>"
 )
 
 
@@ -156,7 +156,12 @@ class BotApp:
         await update.message.reply_html(text)
 
     async def backend_cmd(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
-        if not self.allowed(update):
+        # /backend reports which providers are configured and switches which one
+        # spends GPU time or API credits, so it belongs to the indexing list
+        # rather than the search list. Users who may only search get no reply at
+        # all — not a refusal, which would just advertise that the command
+        # exists.
+        if not (self.allowed(update) and self.may_index(update)):
             return
         if ctx.args:
             try:

@@ -73,7 +73,9 @@ when it's unreachable the bot switches to the cloud and puts the local endpoint
 on a 5-minute cooldown, so one sleeping box doesn't make every sticker wait for
 a timeout. `/backend` shows the current state and reachability, `/backend cloud`
 switches on the fly — handy for indexing one important pack with a stronger
-model while everything else runs locally.
+model while everything else runs locally. Both need `INDEX_USER_IDS`: reading
+the setting exposes which providers you use, and changing it redirects what the
+next `/index` spends.
 
 Cloud calls are per image: a 120-sticker pack is 120 vision requests. Cheap on a
 flash-tier model, less so on a frontier one — see *Who can do what* for the
@@ -154,8 +156,8 @@ your own hardware, use `EMBED_PROVIDER=local` (or `none`) together with
 `CAPTION_BACKEND=local`.
 
 `CAPTION_BACKEND` is the startup default, not a lock: `/backend cloud` switches
-it at runtime, and `auto` falls back to the cloud whenever the local endpoint is
-unreachable. Leave `CLOUD_PROVIDER` empty if captions must never go anywhere —
+it at runtime (for users in `INDEX_USER_IDS`), and `auto` falls back to the cloud
+whenever the local endpoint is unreachable. Leave `CLOUD_PROVIDER` empty if captions must never go anywhere —
 with no cloud backend configured there is nothing to fall back to or switch to.
 
 Telegram sees the traffic in every configuration — the bot polls it for updates
@@ -168,7 +170,11 @@ Two separate lists, because searching is free and captioning is not:
 | | env | empty means |
 |---|---|---|
 | Use the bot (search, inline) | `ALLOWED_USER_IDS` | everyone |
-| Start captioning (`/index`, the button) | `INDEX_USER_IDS` | **nobody** |
+| Spend anything (`/index`, the button, `/reindex`, `/forget`, `/backend`) | `INDEX_USER_IDS` | **nobody** |
+
+`/backend` is on that second list in both directions: it reports which providers
+are configured and it chooses which one the next `/index` spends on. Someone who
+may only search gets no answer from it at all, rather than a refusal.
 
 `INDEX_USER_IDS` unset inherits `ALLOWED_USER_IDS`. Set to an empty value and
 the bot becomes read-only: people can search what's already there but cannot
@@ -202,7 +208,7 @@ a group is rejected too.
 | List packs | `/packs` |
 | Re-caption | `/reindex PackName` (after changing model or language) |
 | Remove | `/forget PackName` |
-| Check / switch model | `/backend`, `/backend local\|cloud\|auto` |
+| Check / switch model | `/backend`, `/backend local\|cloud\|auto` (indexers only) |
 | Check your budget | `/quota` |
 
 Indexing a 50-sticker pack takes a few minutes and is the only slow part.
