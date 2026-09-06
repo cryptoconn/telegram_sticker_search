@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS stickers (
     caption     TEXT,
     model       TEXT,                       -- backend that wrote the caption
     embedding   BLOB,
+    embed_model TEXT,                       -- embedder that wrote the vector
     indexed_at  REAL
 );
 
@@ -73,28 +74,37 @@ class Store:
         self._lock = asyncio.Lock()
         self._matrix: np.ndarray | None = None
         self._matrix_uids: list[str] = []
+        self._matrix_key: tuple[str, int] | None = None
 
     def _migrate(self) -> None:
         cols = {r[1] for r in self._db.execute("PRAGMA table_info(stickers)")}
         if "model" not in cols:
             self._db.execute("ALTER TABLE stickers ADD COLUMN model TEXT")
+        if "embed_model" not in cols:
+            self._db.execute("ALTER TABLE stickers ADD COLUMN embed_model TEXT")
 
     # ---------- write ----------
 
     def _upsert(self, row: dict, vec: np.ndarray | None) -> None:
         blob = vec.astype("float32").tobytes() if vec is not None else None
+        params = {"model": None, "embed_model": None, **row,
+                  "emb": blob, "ts": time.time()}
+        # no vector means no embedding model to record
+        if blob is None:
+            params["embed_model"] = None
         self._db.execute(
             """INSERT INTO stickers (uid, file_id, set_name, emoji, kind, caption,
-                                     model, embedding, indexed_at)
+                                     model, embedding, embed_model, indexed_at)
                VALUES (:uid, :file_id, :set_name, :emoji, :kind, :caption,
-                       :model, :emb, :ts)
+                       :model, :emb, :embed_model, :ts)
                ON CONFLICT(uid) DO UPDATE SET
                    file_id=excluded.file_id, set_name=excluded.set_name,
                    emoji=excluded.emoji, kind=excluded.kind,
                    caption=excluded.caption, model=excluded.model,
                    embedding=excluded.embedding,
+                   embed_model=excluded.embed_model,
                    indexed_at=excluded.indexed_at""",
-            {"model": None, **row, "emb": blob, "ts": time.time()},
+            params,
         )
         text = " ".join(filter(None, [row.get("caption"), row.get("emoji"),
                                       (row.get("set_name") or "").replace("_", " ")]))
@@ -107,7 +117,7 @@ class Store:
     async def upsert_sticker(self, row: dict, vec: np.ndarray | None) -> None:
         async with self._lock:
             await asyncio.to_thread(self._upsert, row, vec)
-            self._matrix = None
+            self._matrix_key = None
 
     async def upsert_set(self, name: str, title: str) -> None:
         async with self._lock:
@@ -137,7 +147,7 @@ class Store:
                 return len(uids)
 
             n = await asyncio.to_thread(run)
-            self._matrix = None
+            self._matrix_key = None
             return n
 
     # ---------- usage quota ----------
@@ -208,15 +218,39 @@ class Store:
                     """SELECT model, COUNT(*) n FROM stickers
                        WHERE caption IS NOT NULL GROUP BY model ORDER BY n DESC""")
             ]
+            embedders = [
+                (r["embed_model"] or "unknown", r["n"])
+                for r in self._db.execute(
+                    """SELECT embed_model, COUNT(*) n FROM stickers
+                       WHERE embedding IS NOT NULL
+                       GROUP BY embed_model ORDER BY n DESC""")
+            ]
             return {"stickers": c["n"], "vectors": c["v"], "sets": s["n"],
-                    "list": sets, "models": models}
+                    "list": sets, "models": models, "embedders": embedders}
 
         return await asyncio.to_thread(run)
 
-    def _load_matrix(self) -> tuple[np.ndarray, list[str]]:
-        if self._matrix is None:
+    def _load_matrix(self, embed_model: str, dim: int) -> tuple[np.ndarray, list[str]]:
+        """Vectors written by one embedding model, at one width.
+
+        Switching EMBED_PROVIDER or EMBED_MODEL changes the vector space, and
+        usually the width too. Stacking widths together raises, which used to
+        take out every search until the database was deleted; and even at equal
+        width, comparing vectors from two models is meaningless. So the query
+        model and width select the rows, and anything else is simply not
+        searched until it is reindexed.
+
+        Rows written before embed_model was recorded are matched on width alone,
+        so upgrading an existing database does not blind the index.
+        """
+        key = (embed_model, dim)
+        if self._matrix_key != key:
             rows = self._db.execute(
-                "SELECT uid, embedding FROM stickers WHERE embedding IS NOT NULL"
+                """SELECT uid, embedding FROM stickers
+                   WHERE embedding IS NOT NULL
+                     AND length(embedding) = ?
+                     AND (embed_model = ? OR embed_model IS NULL)""",
+                (dim * 4, embed_model),      # float32: 4 bytes per component
             ).fetchall()
             if rows:
                 self._matrix_uids = [r["uid"] for r in rows]
@@ -225,7 +259,8 @@ class Store:
                 )
             else:
                 self._matrix_uids = []
-                self._matrix = np.zeros((0, 1), dtype="float32")
+                self._matrix = np.zeros((0, dim), dtype="float32")
+            self._matrix_key = key
         return self._matrix, self._matrix_uids
 
     def _rows(self, uids: list[str]) -> dict[str, StickerRow]:
@@ -241,14 +276,16 @@ class Store:
                                        r["emoji"], r["caption"])
         return out
 
-    def _search(self, qvec: np.ndarray | None, text: str, limit: int) -> list[StickerRow]:
+    def _search(self, qvec: np.ndarray | None, text: str, limit: int,
+                embed_model: str = "") -> list[StickerRow]:
         ranks: dict[str, float] = {}
 
         # dense / semantic
         if qvec is not None:
-            mat, uids = self._load_matrix()
+            qvec = np.asarray(qvec, dtype="float32")
+            mat, uids = self._load_matrix(embed_model, int(qvec.shape[0]))
             if len(uids):
-                sims = mat @ qvec.astype("float32")
+                sims = mat @ qvec
                 order = np.argsort(-sims)[: limit * 5]
                 for rank, i in enumerate(order):
                     ranks[uids[i]] = ranks.get(uids[i], 0.0) + 1.0 / (60 + rank)
@@ -271,5 +308,7 @@ class Store:
         rows = self._rows([uid for uid, _ in top])
         return [rows[uid] for uid, _ in top if uid in rows]
 
-    async def search(self, qvec, text: str, limit: int) -> list[StickerRow]:
-        return await asyncio.to_thread(self._search, qvec, text, limit)
+    async def search(self, qvec, text: str, limit: int,
+                     embed_model: str = "") -> list[StickerRow]:
+        return await asyncio.to_thread(
+            self._search, qvec, text, limit, embed_model)

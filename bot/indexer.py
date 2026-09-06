@@ -92,6 +92,7 @@ class Indexer:
                     "kind": kind_of(s),
                     "caption": caption,
                     "model": model,
+                    "embed_model": self.embedder.label,
                 },
                 vec,
             )

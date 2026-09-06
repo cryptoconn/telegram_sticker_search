@@ -116,6 +116,15 @@ runaway container from doing the same at runtime.
 Embeddings and captions are independent: local model for captions with a cloud
 embedding API is a perfectly normal combination, and vice versa.
 
+Each vector records which embedding model wrote it. Changing `EMBED_PROVIDER` or
+`EMBED_MODEL` puts new vectors in a different space — usually a different width
+too — so the old ones stop being comparable and are left out of search rather
+than mixed in. Nothing breaks and nothing is deleted: `/packs` reports how many
+vectors are being skipped, and `/reindex` on those packs re-embeds them with the
+new model. Keyword search covers everything the whole time. Vectors written
+before the bot recorded this are kept if their width matches, so upgrading does
+not blind an existing index.
+
 Your Telegram user ID: message [@userinfobot](https://t.me/userinfobot).
 
 ## Who can do what

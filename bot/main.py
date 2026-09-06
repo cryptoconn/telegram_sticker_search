@@ -133,10 +133,26 @@ class BotApp:
                  for title, name, n in s["list"]]
         by_model = "\n".join(f"<code>{html.escape(m)}</code> — {n}"
                              for m, n in s.get("models", []))
+        # vectors from another embedding model are not comparable with the
+        # current one, so they are skipped when searching: don't count them
+        # as searchable
+        stale = 0
+        if self.embedder.label != "none":
+            stale = sum(n for m, n in s.get("embedders", [])
+                        if m not in ("unknown", self.embedder.label))
         text = (f"<b>{s['sets']} packs, {s['stickers']} stickers, "
-                f"{s['vectors']} searchable</b>\n\n" + "\n".join(lines))
+                f"{s['vectors'] - stale} searchable</b>\n\n" + "\n".join(lines))
         if by_model:
             text += "\n\ncaptioned by:\n" + by_model
+        if self.embedder.label == "none":
+            text += ("\n\n<i>No embedding model configured — search is "
+                     "keyword-only.</i>")
+        elif stale:
+            was = "vector was" if stale == 1 else "vectors were"
+            text += (f"\n\n⚠️ {stale} {was} written by a different embedding "
+                     f"model and {'is' if stale == 1 else 'are'} skipped when "
+                     f"searching. Re-run <code>/reindex</code> on those packs "
+                     f"to restore them.")
         await update.message.reply_html(text)
 
     async def backend_cmd(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
@@ -331,7 +347,8 @@ class BotApp:
 
         await ctx.bot.send_chat_action(update.effective_chat.id, ChatAction.TYPING)
         vec = await self.embedder.encode_one(query)
-        hits = await self.store.search(vec, query, self.cfg.max_results)
+        hits = await self.store.search(vec, query, self.cfg.max_results,
+                                       self.embedder.label)
         if not hits:
             await update.message.reply_text(
                 "Nothing matched. Index a few packs first, or try other words.")
@@ -349,7 +366,8 @@ class BotApp:
             await iq.answer([], cache_time=5, is_personal=True)
             return
         vec = await self.embedder.encode_one(query)
-        hits = await self.store.search(vec, query, self.cfg.inline_results)
+        hits = await self.store.search(vec, query, self.cfg.inline_results,
+                                       self.embedder.label)
         results = [
             InlineQueryResultCachedSticker(id=str(uuid4()), sticker_file_id=h.file_id)
             for h in hits
