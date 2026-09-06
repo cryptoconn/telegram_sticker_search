@@ -1,0 +1,11 @@
+services:
+  sticker-bot:
+    build: .
+    container_name: sticker-bot
+    env_file: .env
+    restart: unless-stopped
+    volumes:
+      - ./data:/data
+    extra_hosts:
+      # lets the container reach llama.cpp running on the host
+      - "host.docker.internal:host-gateway"
