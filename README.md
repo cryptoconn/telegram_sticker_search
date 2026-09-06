@@ -87,8 +87,34 @@ docker compose up -d --build
 docker compose logs -f
 ```
 
-The first build downloads the embedding model (~500 MB) and CPU-only torch,
-so it takes a few minutes. After that the container starts offline.
+The default image is slim: no torch, ~400 MB, comfortable in 300 MB of RAM.
+
+## Embeddings
+
+Search is a hybrid of vector similarity and SQLite FTS5 keyword matching over
+the captions. Where the vectors come from is up to you:
+
+| `EMBED_PROVIDER` | cost | notes |
+|---|---|---|
+| `api` | an API call per caption | any OpenAI-compatible `/embeddings`: OpenAI, Mistral, or llama.cpp / Ollama on your own box |
+| `local` | ~700 MB RAM | sentence-transformers in-process, fully offline, best multilingual quality |
+| `none` | nothing | keyword-only; works, but "sad cat" won't find "crying kitten" |
+| `auto` | — | local if built in, else api, else none |
+
+`local` needs the model bundled at build time:
+
+```bash
+WITH_LOCAL_EMBEDDINGS=1 docker compose build
+```
+
+That step installs torch and needs roughly **2.5 GB of RAM and 4 GB of disk**.
+On a small VPS it will trip the OOM killer and can take the host down with it —
+use `EMBED_PROVIDER=api` there, or build the image on a bigger machine and push
+it to a registry. `mem_limit` in `docker-compose.yml` (1 GB by default) keeps a
+runaway container from doing the same at runtime.
+
+Embeddings and captions are independent: local model for captions with a cloud
+embedding API is a perfectly normal combination, and vice versa.
 
 Your Telegram user ID: message [@userinfobot](https://t.me/userinfobot).
 

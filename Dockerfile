@@ -10,15 +10,19 @@ ENV PIP_NO_CACHE_DIR=1 \
 
 WORKDIR /app
 
-# CPU-only torch keeps the image around 1 GB instead of 6 GB
-RUN pip install --index-url https://download.pytorch.org/whl/cpu torch==2.5.1
-
-COPY requirements.txt .
+COPY requirements.txt requirements-local-embeddings.txt ./
 RUN pip install -r requirements.txt
 
-# Bake the embedding model into the image so the bot starts offline
+# In-process embeddings are optional. The slim image (default) is ~400 MB and
+# runs in well under 300 MB of RAM; set WITH_LOCAL_EMBEDDINGS=1 only on a
+# machine with a few GB to spare.
+ARG WITH_LOCAL_EMBEDDINGS=0
 ARG EMBED_MODEL=sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
-RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('${EMBED_MODEL}')"
+RUN if [ "$WITH_LOCAL_EMBEDDINGS" = "1" ]; then \
+        pip install --index-url https://download.pytorch.org/whl/cpu torch==2.5.1 && \
+        pip install -r requirements-local-embeddings.txt && \
+        python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('${EMBED_MODEL}')" ; \
+    fi
 
 COPY bot ./bot
 

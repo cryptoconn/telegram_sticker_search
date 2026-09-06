@@ -1,11 +1,18 @@
 services:
   sticker-bot:
-    build: .
+    build:
+      context: .
+      args:
+        # 1 = bundle sentence-transformers + torch for offline embeddings.
+        # Needs ~2.5 GB RAM and ~4 GB disk to build. Leave at 0 on a small VPS.
+        WITH_LOCAL_EMBEDDINGS: "${WITH_LOCAL_EMBEDDINGS:-0}"
     container_name: sticker-bot
     env_file: .env
     restart: unless-stopped
     volumes:
       - ./data:/data
     extra_hosts:
-      # lets the container reach llama.cpp running on the host
+      # lets the container reach a model server running on the host
       - "host.docker.internal:host-gateway"
+    # A hard ceiling, so a runaway container cannot take the host down with it
+    mem_limit: ${MEM_LIMIT:-1g}
