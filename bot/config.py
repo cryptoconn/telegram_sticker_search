@@ -78,7 +78,10 @@ class Config:
     caption_language: str = "English"
     caption_concurrency: int = 2
 
-    embed_model: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+    embed_provider: str = "auto"     # local | api | none | auto
+    embed_model: str = ""
+    embed_base_url: str = ""
+    embed_api_key: str = ""
 
     allowed_user_ids: set[int] = field(default_factory=set)
     index_user_ids: set[int] = field(default_factory=set)
@@ -125,6 +128,13 @@ class Config:
         raw_index = os.environ.get("INDEX_USER_IDS")
         indexers = _ids(raw_index) if raw_index is not None else set(allowed)
 
+        embed_provider = os.environ.get("EMBED_PROVIDER", "auto").strip().lower()
+        if embed_provider not in {"local", "api", "none", "auto"}:
+            raise SystemExit("EMBED_PROVIDER must be local, api, none or auto")
+        default_embed_model = (
+            "text-embedding-3-small" if embed_provider == "api"
+            else "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
+
         return cls(
             bot_token=token,
             db_path=os.environ.get("DB_PATH", "/data/stickers.db"),
@@ -134,10 +144,10 @@ class Config:
             caption_language=os.environ.get("CAPTION_LANGUAGE", "English"),
             caption_concurrency=int(
                 os.environ.get("CAPTION_CONCURRENCY", default_conc)),
-            embed_model=os.environ.get(
-                "EMBED_MODEL",
-                "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
-            ),
+            embed_provider=embed_provider,
+            embed_model=os.environ.get("EMBED_MODEL", default_embed_model),
+            embed_base_url=os.environ.get("EMBED_BASE_URL", "").strip().rstrip("/"),
+            embed_api_key=os.environ.get("EMBED_API_KEY", "").strip(),
             allowed_user_ids=allowed,
             index_user_ids=indexers,
             max_pack_size=int(os.environ.get("MAX_PACK_SIZE", "200")),

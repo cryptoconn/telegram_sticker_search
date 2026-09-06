@@ -1,0 +1,3 @@
+# Only needed for EMBED_PROVIDER=local. Pulls in torch: budget ~2.5 GB RAM and
+# ~4 GB disk for the build, ~700 MB resident at runtime.
+sentence-transformers==3.3.1

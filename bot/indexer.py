@@ -9,7 +9,7 @@ from typing import Awaitable, Callable
 from telegram import Bot, Sticker
 
 from .captioner import CaptionRouter
-from .embedder import Embedder
+from .embedder import Embedder  # noqa: F401
 from .render import to_png
 from .store import Store
 

@@ -29,7 +29,7 @@ from telegram.ext import (
 
 from .captioner import CaptionRouter, build_backend
 from .config import Config
-from .embedder import Embedder
+from .embedder import build_embedder
 from .indexer import Indexer
 from .store import Store
 
@@ -74,7 +74,8 @@ class BotApp:
             build_backend(cfg.cloud, cfg.caption_language) if cfg.cloud else None,
             cfg.backend_mode,
         )
-        self.embedder = Embedder(cfg.embed_model)
+        self.embedder = build_embedder(cfg.embed_provider, cfg.embed_model,
+                                       cfg.embed_base_url, cfg.embed_api_key)
         self.indexer = Indexer(self.store, self.captioner, self.embedder,
                                cfg.caption_concurrency)
 
@@ -343,6 +344,7 @@ class BotApp:
 
     async def post_init(self, app: Application) -> None:
         me = await app.bot.get_me()
+        log.info("embeddings: %s", self.embedder.label)
         log.info("running as @%s | backends: %s | mode: %s", me.username,
                  ", ".join(self.captioner.available) or "none",
                  self.captioner.mode)
@@ -358,6 +360,7 @@ class BotApp:
 
     async def post_shutdown(self, app: Application) -> None:
         await self.captioner.close()
+        await self.embedder.close()
 
 
 def main() -> None:
