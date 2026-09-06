@@ -22,17 +22,33 @@ import httpx
 
 log = logging.getLogger(__name__)
 
-PROMPT = """You are labelling a chat sticker so people can find it later by \
+PROMPT = """You are labelling a chat sticker so someone can find it later by \
 describing it from memory.
 
-Write 1-3 short sentences in {language} covering, in this order:
-- who or what is shown (character, animal, object) and any well-known name
-- what they are doing, their facial expression and mood
-- any text in the image, transcribed exactly, in quotes
-- notable colours, style or background
+Write 2-4 sentences in {language} covering, in this order:
+- Exactly what is shown. Name the species, character, object or person as \
+precisely as you can, and prefer the specific word over the general one: \
+"wolf" rather than "animal", "pug" rather than "dog". Where it could be \
+mistaken for something similar, say which one it is and name the detail that \
+settles it.
+- What it is doing: posture, gesture, facial expression and mood.
+- Any text in the image, transcribed exactly, in quotes.
+- Notable colours, art style, clothing and background.
 
-Be literal and concrete. Add a few likely search words at the end. \
-No preamble, no markdown, just the description."""
+Describe only what is visibly there, and commit to one reading instead of \
+offering alternatives.
+
+Finish with a line starting "Keywords:" listing 5-10 single words someone \
+might search for. Use the precise term and its close synonyms only. Never \
+list a word for something that is not in the picture: a dog is not to be \
+tagged "wolf", and a pig is not to be tagged "boar". A wrong keyword makes \
+this sticker turn up in searches for a different animal entirely.
+
+No preamble, no markdown, no commentary."""
+
+# The new prompt asks for a little more than the old one; leave headroom so a
+# description is never cut off mid-sentence.
+MAX_CAPTION_TOKENS = 400
 
 RETRY_STATUS = {408, 409, 425, 429, 500, 502, 503, 504}
 
@@ -112,7 +128,7 @@ class OpenAIBackend(Backend):
             headers={"Authorization": f"Bearer {self.api_key}"},
             json={
                 "model": self.model,
-                "max_tokens": 300,
+                "max_tokens": MAX_CAPTION_TOKENS,
                 "temperature": 0.2,
                 "messages": [{
                     "role": "user",
@@ -155,7 +171,7 @@ class AnthropicBackend(Backend):
             headers=self._headers(),
             json={
                 "model": self.model,
-                "max_tokens": 300,
+                "max_tokens": MAX_CAPTION_TOKENS,
                 "temperature": 0.2,
                 "messages": [{
                     "role": "user",
@@ -196,7 +212,7 @@ class GoogleBackend(Backend):
                         {"text": self.prompt},
                     ],
                 }],
-                "generationConfig": {"maxOutputTokens": 300, "temperature": 0.2},
+                "generationConfig": {"maxOutputTokens": MAX_CAPTION_TOKENS, "temperature": 0.2},
             },
         )
         cands = resp.json().get("candidates", [])

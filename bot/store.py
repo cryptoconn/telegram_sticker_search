@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
+import logging
 import re
 import sqlite3
 import time
@@ -10,6 +11,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
+
+log = logging.getLogger(__name__)
+
+# Bumped when the text put into stickers_fts changes, so the keyword index is
+# rebuilt from the captions already stored rather than needing a re-caption.
+FTS_VERSION = "2"
 
 SCHEMA = """
 PRAGMA journal_mode=WAL;
@@ -38,6 +45,11 @@ CREATE INDEX IF NOT EXISTS idx_stickers_set ON stickers(set_name);
 CREATE VIRTUAL TABLE IF NOT EXISTS stickers_fts
     USING fts5(uid UNINDEXED, text);
 
+CREATE TABLE IF NOT EXISTS meta (
+    key    TEXT PRIMARY KEY,
+    value  TEXT
+);
+
 -- how many captions each user has spent, per UTC day
 CREATE TABLE IF NOT EXISTS usage (
     user_id   INTEGER NOT NULL,
@@ -64,7 +76,10 @@ def fts_query(text: str) -> str:
 
 
 class Store:
-    def __init__(self, path: str):
+    def __init__(self, path: str, min_score: float = 0.20,
+                 rel_cutoff: float = 0.60):
+        self.min_score = min_score
+        self.rel_cutoff = rel_cutoff
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         self._db = sqlite3.connect(path, check_same_thread=False)
         self._db.row_factory = sqlite3.Row
@@ -82,6 +97,38 @@ class Store:
             self._db.execute("ALTER TABLE stickers ADD COLUMN model TEXT")
         if "embed_model" not in cols:
             self._db.execute("ALTER TABLE stickers ADD COLUMN embed_model TEXT")
+
+        row = self._db.execute(
+            "SELECT value FROM meta WHERE key = 'fts_version'").fetchone()
+        if (row["value"] if row else None) != FTS_VERSION:
+            self._rebuild_fts()
+            self._db.execute(
+                """INSERT INTO meta (key, value) VALUES ('fts_version', ?)
+                   ON CONFLICT(key) DO UPDATE SET value = excluded.value""",
+                (FTS_VERSION,),
+            )
+
+    def _fts_text(self, caption: str | None, emoji: str | None) -> str:
+        """What a sticker is findable by.
+
+        Deliberately not the pack name: it is the same for every sticker in the
+        pack, so a query matching it matched the whole pack — and because the
+        term then appears in every row, bm25's IDF collapses to zero and the
+        ranking cannot tell the wolf from the pig beside it.
+        """
+        return " ".join(filter(None, [caption, emoji]))
+
+    def _rebuild_fts(self) -> None:
+        """Re-derive the keyword index from captions already in the database."""
+        rows = self._db.execute(
+            "SELECT uid, caption, emoji FROM stickers").fetchall()
+        self._db.execute("DELETE FROM stickers_fts")
+        self._db.executemany(
+            "INSERT INTO stickers_fts (uid, text) VALUES (?, ?)",
+            [(r["uid"], self._fts_text(r["caption"], r["emoji"])) for r in rows],
+        )
+        if rows:
+            log.info("rebuilt keyword index for %d stickers", len(rows))
 
     # ---------- write ----------
 
@@ -106,8 +153,7 @@ class Store:
                    indexed_at=excluded.indexed_at""",
             params,
         )
-        text = " ".join(filter(None, [row.get("caption"), row.get("emoji"),
-                                      (row.get("set_name") or "").replace("_", " ")]))
+        text = self._fts_text(row.get("caption"), row.get("emoji"))
         self._db.execute("DELETE FROM stickers_fts WHERE uid = ?", (row["uid"],))
         self._db.execute(
             "INSERT INTO stickers_fts (uid, text) VALUES (?, ?)", (row["uid"], text)
@@ -287,7 +333,16 @@ class Store:
             if len(uids):
                 sims = mat @ qvec
                 order = np.argsort(-sims)[: limit * 5]
+                # Nothing here used to be filtered, so a search always came
+                # back with `limit` stickers however badly they matched — ask
+                # for a wolf in a pack of three and you got the pig too. The
+                # absolute floor rejects a query nothing matches; the relative
+                # one drops the tail once something clearly does.
+                floor = max(self.min_score,
+                            float(sims[order[0]]) * self.rel_cutoff)
                 for rank, i in enumerate(order):
+                    if float(sims[i]) < floor:
+                        break
                     ranks[uids[i]] = ranks.get(uids[i], 0.0) + 1.0 / (60 + rank)
 
         # sparse / keyword
@@ -295,14 +350,24 @@ class Store:
         if match:
             try:
                 rows = self._db.execute(
-                    """SELECT uid FROM stickers_fts WHERE stickers_fts MATCH ?
-                       ORDER BY bm25(stickers_fts) LIMIT ?""",
+                    """SELECT uid, bm25(stickers_fts) AS score FROM stickers_fts
+                       WHERE stickers_fts MATCH ?
+                       ORDER BY score LIMIT ?""",
                     (match, limit * 5),
                 ).fetchall()
             except sqlite3.OperationalError:
                 rows = []
-            for rank, r in enumerate(rows):
-                ranks[r["uid"]] = ranks.get(r["uid"], 0.0) + 1.0 / (60 + rank)
+            if rows:
+                # bm25 is negative and lower is better. Same idea as above: a
+                # multi-word query ORs its terms, so keep the rows that matched
+                # strongly and drop those that only caught a common word. When
+                # every row scores 0 the term is in all of them and they are
+                # all equally right, so nothing is cut.
+                cut = rows[0]["score"] * self.rel_cutoff
+                for rank, r in enumerate(rows):
+                    if r["score"] > cut:
+                        break
+                    ranks[r["uid"]] = ranks.get(r["uid"], 0.0) + 1.0 / (60 + rank)
 
         top = sorted(ranks.items(), key=lambda kv: -kv[1])[:limit]
         rows = self._rows([uid for uid, _ in top])

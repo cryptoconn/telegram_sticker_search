@@ -121,6 +121,9 @@ class Config:
     daily_caption_limit: int = 0        # 0 = unlimited
     max_results: int = 3
     inline_results: int = 30
+    # relevance floors: absolute cosine, and a fraction of the best hit
+    search_min_score: float = 0.20
+    search_relative_cutoff: float = 0.60
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -176,6 +179,13 @@ class Config:
                 "EMBED_API_KEY are set. If you meant to use the API, set "
                 "EMBED_PROVIDER=api explicitly.")
 
+        min_score = float(os.environ.get("SEARCH_MIN_SCORE", "0.20"))
+        rel_cutoff = float(os.environ.get("SEARCH_RELATIVE_CUTOFF", "0.60"))
+        if not -1.0 <= min_score <= 1.0:
+            raise SystemExit("SEARCH_MIN_SCORE must be between -1 and 1")
+        if not 0.0 <= rel_cutoff <= 1.0:
+            raise SystemExit("SEARCH_RELATIVE_CUTOFF must be between 0 and 1")
+
         return cls(
             bot_token=token,
             db_path=os.environ.get("DB_PATH", "/data/stickers.db"),
@@ -195,6 +205,8 @@ class Config:
             daily_caption_limit=int(os.environ.get("DAILY_CAPTION_LIMIT", "0")),
             max_results=int(os.environ.get("MAX_RESULTS", "3")),
             inline_results=int(os.environ.get("INLINE_RESULTS", "30")),
+            search_min_score=min_score,
+            search_relative_cutoff=rel_cutoff,
         )
 
     def is_allowed(self, user_id: int | None) -> bool:

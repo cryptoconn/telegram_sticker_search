@@ -244,7 +244,28 @@ Progress is shown in the chat; already-captioned stickers are skipped on re-runs
   single local GPU, 1–2 is right; for a cloud API 6–10 is fine (it defaults to 6
   in cloud-only mode). Too high and you'll just collect 429s.
 - Search quality lives almost entirely in the captions. If results feel off,
-  edit `PROMPT` in `bot/captioner.py` and `/reindex` a pack to compare.
+  edit `PROMPT` in `bot/captioner.py` and `/reindex` a pack to compare. Changing
+  the prompt only affects stickers captioned afterwards, so `/reindex` is what
+  makes it take effect on packs you already have.
+- `SEARCH_MIN_SCORE` (default `0.20`) and `SEARCH_RELATIVE_CUTOFF` (default
+  `0.60`) decide how bad a match may be before it is dropped. The first is an
+  absolute cosine floor that makes a query nothing matches return nothing; the
+  second keeps only hits scoring at least that fraction of the best one, so a
+  clear winner is not padded out to `MAX_RESULTS` with whatever ranked next.
+  Raise them for stricter results, lower them if searches come back empty.
+  Where the cosines fall varies by embedding model, so treat the defaults as a
+  starting point rather than a calibration.
+
+Two notes on how matching works, since both surprise people:
+
+- The pack name is not searchable. It is identical for every sticker in a pack,
+  so indexing it made one word in the name match the whole pack — searching
+  `wolf` in a pack called `Wolf_Gang` returned every sticker in it, pigs
+  included. Search matches captions and emoji only; use `/packs` to see packs.
+- A caption's keyword list should name only what is in the picture. If the
+  model tags a dog with "wolf" as a plausible search word, that dog will
+  legitimately come back for `wolf` and no amount of ranking will fix it. The
+  shipped prompt says so explicitly; keep that rule if you edit it.
 
 ## Data
 

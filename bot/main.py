@@ -74,7 +74,8 @@ def pack_name(text: str) -> str | None:
 class BotApp:
     def __init__(self, cfg: Config):
         self.cfg = cfg
-        self.store = Store(cfg.db_path)
+        self.store = Store(cfg.db_path, cfg.search_min_score,
+                           cfg.search_relative_cutoff)
         self.captioner = CaptionRouter(
             build_backend(cfg.local, cfg.caption_language) if cfg.local else None,
             build_backend(cfg.cloud, cfg.caption_language) if cfg.cloud else None,
