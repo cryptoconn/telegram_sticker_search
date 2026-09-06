@@ -48,7 +48,9 @@ HELP = (
     "<b>Sticker search</b>\n\n"
     "• Send me any sticker → I offer to index its whole pack.\n"
     "• <code>/index &lt;pack link or name&gt;</code> → index a pack directly.\n"
-    "• Just write what you remember (\"cat crying in the rain\") → I send matches.\n"
+    "• Just write what you remember (\"cat crying in the rain\") → I send the "
+    "best match.\n"
+    "• End with a number for more than one: <code>pig mountain 3</code>.\n"
     "• Type <code>@{me} crying cat</code> in <b>any</b> chat to insert a sticker "
     "inline.\n\n"
     "<code>/packs</code> indexed packs · <code>/forget &lt;name&gt;</code> remove a "
@@ -59,6 +61,28 @@ HELP = (
     "<i>/index, /reindex, /forget and /backend are limited to the user IDs in "
     "INDEX_USER_IDS; everyone allowed can search.</i>"
 )
+
+
+# "pig mountain 3" asks for three stickers. Only a one- or two-digit trailing
+# number counts, and only with something else to search for, so a query that is
+# genuinely about a number — "error 404", or "5" on its own — is left alone.
+COUNT_RE = re.compile(r"^(.*\S)\s+(\d{1,2})$")
+
+
+def split_count(text: str, default: int, cap: int) -> tuple[str, int]:
+    """Split a trailing result count off a query.
+
+    Returns the query without the count, and how many stickers to send. A count
+    above the cap is clamped rather than refused: the intent is clear enough.
+    """
+    text = text.strip()
+    m = COUNT_RE.match(text)
+    if not m:
+        return text, default
+    rest, n = m.group(1), int(m.group(2))
+    if n < 1:
+        return text, default
+    return rest, min(n, cap)
 
 
 def pack_name(text: str) -> str | None:
@@ -351,10 +375,14 @@ class BotApp:
             await self.run_index(update, ctx, pack_name(query), force=False)
             return
 
+        query, limit = split_count(query, self.cfg.max_results,
+                                   self.cfg.max_results_cap)
+        if not query:
+            return
+
         await ctx.bot.send_chat_action(update.effective_chat.id, ChatAction.TYPING)
         vec = await self.embedder.encode_one(query)
-        hits = await self.store.search(vec, query, self.cfg.max_results,
-                                       self.embedder.label)
+        hits = await self.store.search(vec, query, limit, self.embedder.label)
         if not hits:
             await update.message.reply_text(
                 "Nothing matched. Index a few packs first, or try other words.")
@@ -367,13 +395,13 @@ class BotApp:
         if not self.cfg.is_allowed(iq.from_user.id):
             await iq.answer([], cache_time=5, is_personal=True)
             return
-        query = iq.query.strip()
+        query, limit = split_count(iq.query, self.cfg.inline_results,
+                                   self.cfg.inline_results)
         if not query:
             await iq.answer([], cache_time=5, is_personal=True)
             return
         vec = await self.embedder.encode_one(query)
-        hits = await self.store.search(vec, query, self.cfg.inline_results,
-                                       self.embedder.label)
+        hits = await self.store.search(vec, query, limit, self.embedder.label)
         results = [
             InlineQueryResultCachedSticker(id=str(uuid4()), sticker_file_id=h.file_id)
             for h in hits

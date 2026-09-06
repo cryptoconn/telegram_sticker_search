@@ -216,8 +216,9 @@ a group is rejected too.
 |---|---|
 | Index a pack | Send the bot any sticker from it, tap **Index this pack** |
 | Index by link | `/index https://t.me/addstickers/PackName` |
-| Search | Just write: `guy shrugging with a confused face` |
+| Search | Just write: `guy shrugging with a confused face` — you get the best match |
 | Narrow a search | Add words: `pig mountain` beats `pig` when the pack has several pigs |
+| Ask for several | End with a number: `pig mountain 3` sends up to three |
 | Search anywhere | Type `@yourbot crying cat` in any chat |
 | List packs | `/packs` |
 | Re-caption | `/reindex PackName` (after changing model or language) |
@@ -256,6 +257,13 @@ Progress is shown in the chat; already-captioned stickers are skipped on re-runs
   Raise them for stricter results, lower them if searches come back empty.
   Where the cosines fall varies by embedding model, so treat the defaults as a
   starting point rather than a calibration.
+
+A search answers with the single best match. End the query with a number to
+ask for more — `pig 3` sends up to three — capped by `MAX_RESULTS_CAP` (10) so
+a stray number cannot spam a chat. "Up to" is literal: the relevance floors
+still apply, so asking for three when only one sticker really fits sends one.
+Only a one- or two-digit trailing number is read as a count, so `error 404`
+stays an ordinary search. The same works inline: `@yourbot pig 3`.
 
 Adding words narrows a search rather than widening it. `pig mountain` prefers
 the one caption mentioning both, so a pack full of pigs returns just the one on

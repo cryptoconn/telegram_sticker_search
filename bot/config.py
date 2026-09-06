@@ -119,7 +119,8 @@ class Config:
     index_user_ids: set[int] = field(default_factory=set)
     max_pack_size: int = 200
     daily_caption_limit: int = 0        # 0 = unlimited
-    max_results: int = 3
+    max_results: int = 1        # a plain search answers with the best match
+    max_results_cap: int = 10   # most a query may ask for by trailing number
     inline_results: int = 30
     # relevance floors: absolute cosine, and a fraction of the best hit
     search_min_score: float = 0.20
@@ -179,6 +180,10 @@ class Config:
                 "EMBED_API_KEY are set. If you meant to use the API, set "
                 "EMBED_PROVIDER=api explicitly.")
 
+        max_results_cap = int(os.environ.get("MAX_RESULTS_CAP", "10"))
+        if max_results_cap < 1:
+            raise SystemExit("MAX_RESULTS_CAP must be at least 1")
+
         min_score = float(os.environ.get("SEARCH_MIN_SCORE", "0.20"))
         rel_cutoff = float(os.environ.get("SEARCH_RELATIVE_CUTOFF", "0.60"))
         if not -1.0 <= min_score <= 1.0:
@@ -203,7 +208,8 @@ class Config:
             index_user_ids=indexers,
             max_pack_size=int(os.environ.get("MAX_PACK_SIZE", "200")),
             daily_caption_limit=int(os.environ.get("DAILY_CAPTION_LIMIT", "0")),
-            max_results=int(os.environ.get("MAX_RESULTS", "3")),
+            max_results=int(os.environ.get("MAX_RESULTS", "1")),
+            max_results_cap=max_results_cap,
             inline_results=int(os.environ.get("INLINE_RESULTS", "30")),
             search_min_score=min_score,
             search_relative_cutoff=rel_cutoff,
