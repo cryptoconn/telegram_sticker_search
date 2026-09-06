@@ -47,7 +47,21 @@ class LocalEmbedder(Embedder):
 
         log.info("loading embedding model %s", model_name)
         self.label = f"local:{model_name}"
-        self._model = SentenceTransformer(model_name)
+        try:
+            self._model = SentenceTransformer(model_name)
+        except Exception as exc:  # noqa: BLE001
+            # Almost always an API model name left in EMBED_MODEL, which
+            # otherwise surfaces as an opaque huggingface traceback.
+            raise SystemExit(
+                f"EMBED_MODEL={model_name!r} is not a local "
+                f"sentence-transformers model ({type(exc).__name__}: "
+                f"{str(exc).splitlines()[0][:160]}).\n"
+                f"Names like 'text-embedding-3-small' or 'mistral-embed' belong "
+                f"to an API provider — set EMBED_PROVIDER=api together with "
+                f"EMBED_BASE_URL and EMBED_API_KEY.\n"
+                f"For in-process embeddings pick a sentence-transformers model, "
+                f"e.g. sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2."
+            ) from exc
 
     def _encode(self, texts: list[str]) -> np.ndarray:
         return self._model.encode(

@@ -1,8 +1,12 @@
 """Configuration, read once from the environment."""
 from __future__ import annotations
 
+import importlib.util
+import logging
 import os
 from dataclasses import dataclass, field
+
+log = logging.getLogger(__name__)
 
 # provider -> (wire protocol, default base url, default model)
 PRESETS: dict[str, tuple[str, str, str]] = {
@@ -29,6 +33,34 @@ CLOUD_PROVIDERS = {"openai", "openrouter", "groq", "mistral", "xai", "anthropic"
 
 def _ids(raw: str) -> set[int]:
     return {int(x) for x in raw.replace(",", " ").split() if x.strip()}
+
+
+def _have_sentence_transformers() -> bool:
+    # find_spec locates the package without importing it, so resolving to a
+    # different provider does not pay for loading torch.
+    try:
+        return importlib.util.find_spec("sentence_transformers") is not None
+    except (ImportError, ValueError):
+        return False
+
+
+def _resolve_embed_provider(provider: str, base_url: str) -> str:
+    """Turn 'auto' into a concrete provider.
+
+    Local first: it is the one that costs nothing per query. Resolving here
+    rather than in build_embedder means the default EMBED_MODEL below is chosen
+    for the provider that will actually be used — picking it from the
+    unresolved 'auto' used to hand a sentence-transformers model name to an API,
+    which fails per request and silently leaves search keyword-only.
+    """
+    if provider != "auto":
+        return provider
+    if _have_sentence_transformers():
+        resolved = "local"
+    else:
+        resolved = "api" if base_url else "none"
+    log.info("EMBED_PROVIDER=auto resolved to %s", resolved)
+    return resolved
 
 
 @dataclass(frozen=True)
@@ -131,9 +163,18 @@ class Config:
         embed_provider = os.environ.get("EMBED_PROVIDER", "auto").strip().lower()
         if embed_provider not in {"local", "api", "none", "auto"}:
             raise SystemExit("EMBED_PROVIDER must be local, api, none or auto")
+        embed_base_url = os.environ.get("EMBED_BASE_URL", "").strip().rstrip("/")
+        embed_api_key = os.environ.get("EMBED_API_KEY", "").strip()
+        embed_provider = _resolve_embed_provider(embed_provider, embed_base_url)
+        # chosen for the resolved provider, so the two can never disagree
         default_embed_model = (
             "text-embedding-3-small" if embed_provider == "api"
             else "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
+        if embed_provider == "local" and embed_api_key and embed_base_url:
+            log.warning(
+                "EMBED_PROVIDER resolved to local, but EMBED_BASE_URL and "
+                "EMBED_API_KEY are set. If you meant to use the API, set "
+                "EMBED_PROVIDER=api explicitly.")
 
         return cls(
             bot_token=token,
@@ -146,8 +187,8 @@ class Config:
                 os.environ.get("CAPTION_CONCURRENCY", default_conc)),
             embed_provider=embed_provider,
             embed_model=os.environ.get("EMBED_MODEL", default_embed_model),
-            embed_base_url=os.environ.get("EMBED_BASE_URL", "").strip().rstrip("/"),
-            embed_api_key=os.environ.get("EMBED_API_KEY", "").strip(),
+            embed_base_url=embed_base_url,
+            embed_api_key=embed_api_key,
             allowed_user_ids=allowed,
             index_user_ids=indexers,
             max_pack_size=int(os.environ.get("MAX_PACK_SIZE", "200")),

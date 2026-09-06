@@ -105,6 +105,19 @@ the captions. Where the vectors come from is up to you:
 | `none` | nothing | keyword-only; works, but "sad cat" won't find "crying kitten" |
 | `auto` | — | local if built in, else api, else none |
 
+`EMBED_MODEL` belongs to whichever provider you picked, and the two are not
+interchangeable: `text-embedding-3-small` and `mistral-embed` are API model
+names, while `local` wants a sentence-transformers repo such as
+`sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2`. Leave
+`EMBED_MODEL` unset and a sensible default for the resolved provider is used.
+Setting a name from the wrong side stops the bot at startup with an explanation
+rather than a Hugging Face traceback.
+
+Note that `auto` prefers `local` whenever the image was built with it, because
+that is the option with no per-query cost — so on an image built with
+`WITH_LOCAL_EMBEDDINGS=1`, leftover `EMBED_BASE_URL` and `EMBED_API_KEY` values
+do not switch it to the API. Set `EMBED_PROVIDER=api` explicitly for that.
+
 `local` needs the model bundled at build time:
 
 ```bash
