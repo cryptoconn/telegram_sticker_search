@@ -1,9 +1,11 @@
 # Sticker Search Bot
 
 A Telegram bot that finds stickers by description. It captions every sticker in
-your packs with a local vision model, embeds the captions, and searches them
-with a hybrid of semantic similarity and keyword matching. Everything runs in
-one Docker container; nothing leaves your machine.
+your packs with a vision model — local or cloud, whichever you configure —
+embeds the captions, and searches them with a hybrid of semantic similarity and
+keyword matching. It runs in one Docker container and keeps everything in a
+local SQLite file. How much of the work also stays local is your choice: see
+[What leaves your machine](#what-leaves-your-machine).
 
 ```
 sticker  →  PNG frame  →  vision model caption  →  embedding  →  SQLite
@@ -126,6 +128,38 @@ before the bot recorded this are kept if their width matches, so upgrading does
 not blind an existing index.
 
 Your Telegram user ID: message [@userinfobot](https://t.me/userinfobot).
+
+## What leaves your machine
+
+The database lookup itself is always local — SQLite FTS5 plus an in-process
+vector comparison, no network, no external service. What the two model slots do
+is up to how you set them:
+
+| | stays on your machine | goes to a provider |
+|---|---|---|
+| Captioning (`/index`) | `CAPTION_BACKEND=local` | any `CLOUD_PROVIDER` use — one image per sticker |
+| Search queries | `EMBED_PROVIDER=local` or `none` | `EMBED_PROVIDER=api` — the query text, on every search |
+| Sending the sticker back | — | Telegram, always |
+
+The row that surprises people is the middle one. Captioning is finished once a
+pack is indexed and never runs again, but searching still has to embed the
+query, so with `EMBED_PROVIDER=api` your search text is sent to the embedding
+provider every time. Nothing is cached, and inline queries are sent as you type,
+so a single inline search is several requests.
+
+A query has to be embedded in the same vector space as the captions it is
+compared against, which is why "cloud embeddings for indexing, local for
+searching" is not a combination that exists. For search that touches nothing but
+your own hardware, use `EMBED_PROVIDER=local` (or `none`) together with
+`CAPTION_BACKEND=local`.
+
+`CAPTION_BACKEND` is the startup default, not a lock: `/backend cloud` switches
+it at runtime, and `auto` falls back to the cloud whenever the local endpoint is
+unreachable. Leave `CLOUD_PROVIDER` empty if captions must never go anywhere —
+with no cloud backend configured there is nothing to fall back to or switch to.
+
+Telegram sees the traffic in every configuration — the bot polls it for updates
+and sends stickers back by `file_id` — as with any Telegram bot.
 
 ## Who can do what
 
